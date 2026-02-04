@@ -3,58 +3,6 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import os
-import zipfile
-from cryptography.fernet import Fernet
-
-data_folder = "data"
-encrypted_file = "data_encrypted.zip.enc"
-
-
-@st.cache_resource
-def decrypt_and_extract(_fernet):
-    if os.path.exists(data_folder):
-        return data_folder
-
-    if not os.path.exists(encrypted_file):
-        st.error(f"未找到明文 '{data_folder}' 文件夹，也未找到加密文件 '{encrypted_file}'！")
-        st.stop()
-
-    try:
-        with open(encrypted_file, "rb") as file:
-            encrypted_data = file.read()
-        decrypted_data = _fernet.decrypt(encrypted_data)
-
-        temp_zip = "temp_data.zip"
-        with open(temp_zip, "wb") as zip_file:
-            zip_file.write(decrypted_data)
-
-        os.makedirs(data_folder, exist_ok=True)
-        with zipfile.ZipFile(temp_zip, 'r') as zip_ref:
-            zip_ref.extractall(data_folder)
-
-        os.remove(temp_zip)
-
-        st.success(f"成功从 '{encrypted_file}' 解密并加载数据到 '{data_folder}' 文件夹")
-        return data_folder
-
-    except Exception as e:
-        st.error(f"解密失败：{str(e)}")
-        st.info("可能原因：密钥错误、加密文件损坏、或未配置 secrets。请检查 .streamlit/secrets.toml 中的 ENCRYPTION_KEY。")
-        st.stop()
-
-
-if st.secrets.get("ENCRYPTION_KEY"):
-    try:
-        fernet = Fernet(st.secrets["ENCRYPTION_KEY"].encode())
-        data_folder = decrypt_and_extract(fernet)  # 如果已经存在 data 文件夹，直接返回
-    except Exception as e:
-        st.error(f"密钥无效：{str(e)}")
-        st.stop()
-else:
-    if not os.path.exists(data_folder):
-        st.error(f"未找到 '{data_folder}' 文件夹，也未配置加密密钥！")
-        st.info("部署到 Streamlit Cloud 时必须配置 .streamlit/secrets.toml 并上传加密文件。")
-        st.stop()
 
 st.set_page_config(page_title="发动机数据可视化工具", layout="wide")
 st.title("车台数据可视化")
@@ -69,8 +17,12 @@ st.markdown("""
 **计算参数全局生效，所有 Tab 均可用**
 """)
 
+# ==================== 自动加载 data 文件夹中的 CSV ====================
+data_folder = "data"
+
 if not os.path.exists(data_folder):
-    st.error("解密后仍未找到 data 文件夹，请检查加密文件内容。")
+    st.error(f"未找到 '{data_folder}' 文件夹！请在项目根目录创建该文件夹，并放入 CSV 文件。")
+    st.info("示例结构：\n data/发动机A.csv\n data/发动机B.csv\n ...")
     st.stop()
 
 csv_files = [f for f in os.listdir(data_folder) if f.lower().endswith(".csv")]
@@ -79,6 +31,7 @@ if not csv_files:
     st.error(f"'{data_folder}' 文件夹为空！请放入至少一个 CSV 文件。")
     st.stop()
 
+# 读取所有 CSV
 valid_files = []
 invalid_files = []
 
@@ -109,11 +62,13 @@ if not valid_files:
 
 st.success(f"成功加载 {len(valid_files)} 个发动机数据：{', '.join([name for name, _ in valid_files])}")
 
+# 收集所有列名（初始）
 all_columns = set()
 for _, df in valid_files:
     all_columns.update(df.columns)
 columns = sorted(all_columns)
 
+# 颜色方案
 colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
           "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
 
@@ -123,6 +78,7 @@ for name, _ in valid_files:
     file_color_map[name] = colors[color_idx % len(colors)]
     color_idx += 1
 
+# ==================== 计算参数功能（全局） ====================
 if 'calculated_params' not in st.session_state:
     st.session_state.calculated_params = []
 
@@ -160,6 +116,7 @@ with st.expander("添加计算参数（全局，所有发动机都会尝试计�
                 st.session_state.calculated_params.pop(i)
                 st.rerun()
 
+# 对每个发动机执行计算
 for name, df in valid_files:
     for param in st.session_state.calculated_params:
         try:
@@ -167,13 +124,16 @@ for name, df in valid_files:
         except Exception as e:
             st.warning(f"发动机 {name} 计算 {param['name']} 失败：{str(e)}（可能缺少所需列）")
 
+# 重新收集列名（包含计算列）
 all_columns = set()
 for _, df in valid_files:
     all_columns.update(df.columns)
 columns = sorted(all_columns)
 
+# ==================== Tabs ====================
 tab1, tab2, tab3 = st.tabs(["折线图对比", "XY散点分布", "密度直方图"])
 
+# ====================== Tab 1: 折线图对比 ======================
 with tab1:
     st.subheader("折线图对比（时间序列）")
     selected_line_columns = st.multiselect(
@@ -268,6 +228,7 @@ with tab1:
         else:
             st.warning("选中的参数在数据中无有效值")
 
+# ====================== Tab 2: XY散点分布 ======================
 with tab2:
     st.subheader("XY散点分布")
     col_x, col_y = st.columns(2)
@@ -286,6 +247,7 @@ with tab2:
             key="y_scatter"
         )
 
+    # 过滤占位选项
     if x_column == "-- 请选择 --":
         x_column = None
     if y_column == "-- 请选择 --":
@@ -347,6 +309,8 @@ with tab2:
             st.plotly_chart(fig_scatter, use_container_width=True)
         else:
             st.warning("选中的 X/Y 列在数据中无有效值")
+
+# ====================== Tab 3: 密度直方图 ======================
 with tab3:
     st.subheader("密度直方图")
     selected_hist_columns = st.multiselect(
@@ -445,9 +409,12 @@ with tab3:
             st.plotly_chart(fig_hist, use_container_width=True)
         else:
             st.warning("选中的参数在数据中无有效值")
+
+# ====================== 统计信息 ======================
 if st.checkbox("显示选中参数的基本统计信息（所有 Tab 共享）"):
     all_selected = set()
 
+    # 通过 session_state 安全获取已选择的列
     if st.session_state.get("line_columns"):
         all_selected.update(st.session_state.line_columns)
     if st.session_state.get("hist_columns"):
