@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import os
+import io
 
 st.set_page_config(page_title="发动机数据可视化工具", layout="wide")
 st.title("车台数据可视化")
@@ -17,50 +17,78 @@ st.markdown("""
 **计算参数全局生效，所有 Tab 均可用**
 """)
 
-# ==================== 自动加载 data 文件夹中的 CSV ====================
-data_folder = "data"
+# ==================== 文件上传功能 ====================
+st.sidebar.header("上传数据文件")
+uploaded_files = st.sidebar.file_uploader(
+    "上传CSV文件（可多选）",
+    type=["csv"],
+    accept_multiple_files=True,
+    help="支持上传多个CSV文件进行比较分析"
+)
 
-if not os.path.exists(data_folder):
-    st.error(f"未找到 '{data_folder}' 文件夹！请在项目根目录创建该文件夹，并放入 CSV 文件。")
-    st.info("示例结构：\n data/发动机A.csv\n data/发动机B.csv\n ...")
+# 如果没有上传文件，显示提示信息
+if not uploaded_files:
+    st.info("👈 请从左侧边栏上传CSV文件开始分析")
     st.stop()
 
-csv_files = [f for f in os.listdir(data_folder) if f.lower().endswith(".csv")]
+# 初始化session_state用于存储上传的文件
+if 'valid_files' not in st.session_state:
+    st.session_state.valid_files = []
 
-if not csv_files:
-    st.error(f"'{data_folder}' 文件夹为空！请放入至少一个 CSV 文件。")
-    st.stop()
+# 当上传文件变化时更新数据
+current_file_names = [f.name for f in uploaded_files]
+stored_file_names = [name for name, _ in st.session_state.valid_files]
 
-# 读取所有 CSV
-valid_files = []
-invalid_files = []
+if current_file_names != stored_file_names:
+    st.session_state.valid_files = []
+    invalid_files = []
 
-for file_name in csv_files:
-    file_path = os.path.join(data_folder, file_name)
-    try:
-        df = pd.read_csv(
-            file_path,
-            sep=',',
-            on_bad_lines='skip',
-            encoding='utf-8-sig',
-            engine='python'
-        )
-        if df.empty or len(df.columns) == 0:
-            invalid_files.append(file_name)
-        else:
-            engine_name = os.path.splitext(file_name)[0]  # 文件名去掉 .csv 作为发动机名称
-            valid_files.append((engine_name, df.copy()))
-    except Exception as e:
-        invalid_files.append(f"{file_name} ({str(e)})")
+    for uploaded_file in uploaded_files:
+        try:
+            # 读取CSV文件
+            content = uploaded_file.read()
 
-if invalid_files:
-    st.warning(f"以下文件读取失败或为空，已跳过：{', '.join(invalid_files)}")
+            # 尝试不同的编码
+            try:
+                content_str = content.decode('utf-8-sig')
+            except:
+                content_str = content.decode('gbk')
+
+            df = pd.read_csv(
+                io.StringIO(content_str),
+                sep=',',
+                on_bad_lines='skip',
+                engine='python'
+            )
+
+            if df.empty or len(df.columns) == 0:
+                invalid_files.append(f"{uploaded_file.name} (文件为空或格式错误)")
+            else:
+                # 使用文件名作为发动机名称
+                engine_name = uploaded_file.name.replace('.csv', '').replace('.CSV', '')
+                st.session_state.valid_files.append((engine_name, df.copy()))
+
+        except Exception as e:
+            invalid_files.append(f"{uploaded_file.name} ({str(e)})")
+
+    if invalid_files:
+        st.sidebar.warning(f"以下文件读取失败：{', '.join(invalid_files)}")
+
+valid_files = st.session_state.valid_files
 
 if not valid_files:
-    st.error("没有有效的 CSV 文件。请检查 data 文件夹中的文件格式。")
+    st.error("没有有效的CSV文件。请检查文件格式。")
     st.stop()
 
 st.success(f"成功加载 {len(valid_files)} 个发动机数据：{', '.join([name for name, _ in valid_files])}")
+
+# 在侧边栏显示已加载的文件列表
+with st.sidebar.expander("已加载的文件", expanded=True):
+    for name, df in valid_files:
+        st.write(f"**{name}**")
+        st.write(f"数据形状: {df.shape[0]}行 × {df.shape[1]}列")
+        st.write(f"列名: {', '.join(list(df.columns)[:5])}{'...' if len(df.columns) > 5 else ''}")
+        st.divider()
 
 # 收集所有列名（初始）
 all_columns = set()
@@ -120,7 +148,9 @@ with st.expander("添加计算参数（全局，所有发动机都会尝试计�
 for name, df in valid_files:
     for param in st.session_state.calculated_params:
         try:
-            df[param["name"]] = df.eval(param["expr"])
+            # 检查是否已有该列（避免重复计算）
+            if param["name"] not in df.columns:
+                df[param["name"]] = df.eval(param["expr"])
         except Exception as e:
             st.warning(f"发动机 {name} 计算 {param['name']} 失败：{str(e)}（可能缺少所需列）")
 
